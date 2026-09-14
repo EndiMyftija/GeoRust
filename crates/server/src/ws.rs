@@ -1,11 +1,14 @@
-use axum::Error;
-use axum::extract::WebSocketUpgrade;
+use std::sync::Arc;
+use axum::extract::{State, WebSocketUpgrade};
 use axum::extract::ws::{Message, WebSocket};
 use axum::response::Response;
 use common::protocols::{ClientMessage, ServerMessage};
+use crate::state::AppState;
 
-pub async fn ws_handler(ws: WebSocketUpgrade) -> Response {
-    ws.on_upgrade(handle_socket)
+pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> Response {
+    ws.on_upgrade(move |socket| {
+        handle_socket(socket, state)
+    })
 }
 
 async fn send_message(socket: &mut WebSocket, message: &ServerMessage) -> Result<(), axum::Error> {
@@ -13,7 +16,7 @@ async fn send_message(socket: &mut WebSocket, message: &ServerMessage) -> Result
     socket.send(Message::Text(json.into())).await
 }
 
-async fn handle_socket(mut socket: WebSocket) {
+async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
     println!("A websocket client connected");
 
     while let Some(result) = socket.recv().await {
@@ -27,7 +30,27 @@ async fn handle_socket(mut socket: WebSocket) {
                             Ok(client_message) => {
                                 match client_message {
                                     ClientMessage::Register { username, password } => {
-                                        println!("Registration requested for {}", username);
+                                        let mut users = state.users.write().await;
+                                        if users.contains_key(&username) {
+                                            let response = ServerMessage::Error {
+                                                message: format!("Username '{}' already registered", username),
+                                            };
+
+                                            if send_message(&mut socket, &response).await.is_err() {
+                                                break;
+                                            }
+                                        }
+                                        else {
+                                            users.insert(
+                                                username.clone(),
+                                                password,
+                                            );
+                                            drop(users);
+                                            let response = ServerMessage::RegistrationSuccessful;
+                                            if send_message(&mut socket, &response).await.is_err() {
+                                                break;
+                                            }
+                                        }
                                     }
                                     ClientMessage::Login { username, password} => {
                                         println!("Login requested for {}", username);
