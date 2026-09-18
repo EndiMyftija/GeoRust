@@ -1,3 +1,4 @@
+use std::fmt::format;
 use std::sync::Arc;
 use axum::extract::{State, WebSocketUpgrade};
 use axum::extract::ws::{Message, WebSocket};
@@ -17,6 +18,7 @@ async fn send_message(socket: &mut WebSocket, message: &ServerMessage) -> Result
 }
 
 async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
+    let mut authenticated_user: Option<String> = None;
     println!("A websocket client connected");
 
     while let Some(result) = socket.recv().await {
@@ -53,10 +55,48 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<AppState>) {
                                         }
                                     }
                                     ClientMessage::Login { username, password} => {
-                                        println!("Login requested for {}", username);
+                                        let users = state.users.read().await;
+                                        let valid = match users.get(&username) {
+                                            Some(stored_password) => stored_password == &password,
+                                            None => false,
+                                        };
+
+                                        if valid {
+                                            authenticated_user = Some(username.clone());
+                                            println!("{} authenticated", username);
+                                            let response = ServerMessage::LoginSuccessful;
+
+                                            if send_message(&mut socket, &response).await.is_err() {
+                                                break;
+                                            }
+                                        }
+                                        else {
+                                            let response = ServerMessage::Error {
+                                                message: "Invalid username or password".to_string(),
+                                            };
+                                            if send_message(&mut socket, &response).await.is_err() {
+                                                break;
+                                            }
+                                        }
                                     }
                                     ClientMessage::PositionUpdate { position } => {
-                                        println!("Position received: {} {}", position.latitude ,position.longitude)
+                                        match authenticated_user.as_ref() {
+                                            None => {
+                                                let response = ServerMessage::Error {
+                                                    message: "You must login first".to_string(),
+                                                };
+
+                                                if send_message(&mut socket, &response).await.is_err() {
+                                                    break;
+                                                }
+                                            }
+                                            Some(username) => {
+                                                println!("Position from {}: {}, {}",
+                                                username,
+                                                position.latitude,
+                                                position.longitude);
+                                            }
+                                        }
                                     }
                                     ClientMessage::TextMessage { content } => {
                                         let response = ServerMessage::TextMessage {
